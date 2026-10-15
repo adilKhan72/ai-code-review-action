@@ -57,7 +57,13 @@ inputs:
 
 outputs:
   status:
-    description: reviewed, skipped or not-implemented.
+    description: reviewed (review posted), clean (no findings, nothing posted), dry-run, or skipped.
+  inline-comments:
+    description: Number of inline comments in the review.
+  summary-findings:
+    description: Number of findings reported only in the summary (outside the diff or over the inline limit).
+  review-url:
+    description: URL of the posted review, when one was posted.
 
 runs:
   using: node24

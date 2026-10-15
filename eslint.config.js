@@ -16,5 +16,6 @@ export default tseslint.config(
   {
     files: ['**/*.js', '**/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
+    languageOptions: { globals: { process: 'readonly', console: 'readonly' } },
   },
 );

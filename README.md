@@ -4,7 +4,8 @@ A GitHub Action that reviews pull requests with an LLM and posts **one** review 
 lines the PR actually changed**, under hard cost limits.
 
 > **Status: in active development.** Built in public, one pull request per milestone. See [Roadmap](#roadmap).
-> It has not yet been run against a live model; every test uses mocked providers.
+> The review engine works end to end against the real GitHub API, but it has **not yet been run against a live
+> model**. Every provider test uses a mock.
 
 ## The problem
 
@@ -47,15 +48,21 @@ flowchart LR
     S --> R
 ```
 
-| Step       | Module (planned) | Notes                                                                               |
-| ---------- | ---------------- | ----------------------------------------------------------------------------------- |
-| Fetch      | `src/github/`    | `pulls.listFiles` gives per-file patches without cloning the repo                   |
-| Filter     | `src/filter.ts`  | include/exclude globs, per-file byte cap, skip binaries and removed files           |
-| Diff model | `src/diff/`      | parse unified-diff hunks into the set of commentable `RIGHT`-side lines             |
-| Chunk      | `src/chunk.ts`   | whole files per chunk where possible, never more than the byte budget               |
-| Provider   | `src/providers/` | `Provider.review(prompt) → Finding[]`. Anthropic, OpenAI, Ollama                    |
-| Map        | `src/review/`    | move off-diff findings to the summary and dedupe, then build the review payload     |
-| Post       | `src/github/`    | a single `POST /pulls/{n}/reviews` with `event: COMMENT` (never approves or blocks) |
+| Step     | Module                          | Notes                                                                                                                   |
+| -------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Fetch    | `src/github.ts`                 | `pulls.get` + paginated `pulls.listFiles`: per-file patches, no checkout                                                |
+| Filter   | `src/filter.ts`                 | include/exclude globs, per-file byte cap, skip deleted/binary files, `max-files`                                        |
+| Diff     | `src/diff/patch.ts`             | parse hunks into commentable `RIGHT`-side lines; render the patch with explicit new-file line numbers for the model     |
+| Chunk    | `src/chunk.ts`                  | whole files per request (about 60 KB), hard `max-diff-bytes` total. Files over budget are skipped, never truncated      |
+| Prompt   | `src/prompt.ts`                 | PR title, description and diffs inside random-nonce `UNTRUSTED` markers; injection rules in the system prompt           |
+| Provider | `src/providers/`                | `complete({system, user, schema})`. Anthropic SDK, OpenAI and Ollama over `fetch`. Typed refusal/truncation errors      |
+| Validate | `src/findings.ts`               | one shared JSON schema, then a strict re-check. Findings for files not in that request are dropped as invented          |
+| Map      | `src/review/map.ts`             | severity threshold, de-duplication, anchor check, inline cap of 25. Everything else goes to the summary                 |
+| Post     | `src/review/payload.ts`, engine | one `COMMENT` review pinned to the head SHA. On `422` (diff moved under us), re-posts with every finding in the summary |
+
+Failure handling: if one request fails (refusal, truncation, bad JSON, HTTP error), the review is still posted and
+marked **partially reviewed**. If every request fails, the step fails and nothing is posted. If there are no
+findings, nothing is posted. The `status` output and the job log say so, to avoid "LGTM" noise on every push.
 
 ## Usage
 
@@ -69,6 +76,11 @@ on:
 permissions:
   contents: read
   pull-requests: write
+
+# A new push makes the running review obsolete.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
@@ -92,22 +104,39 @@ jobs:
 
 ## Configuration
 
-Inputs as planned. They are implemented milestone by milestone. `action.yml` is the source of truth once it
-exists.
+`action.yml` is the source of truth.
 
-| Input                 | Default                                        | Purpose                                                      |
-| --------------------- | ---------------------------------------------- | ------------------------------------------------------------ |
-| `provider`            | `anthropic`                                    | `anthropic`, `openai` or `ollama`                            |
-| `model`               | per provider (`claude-opus-5-5` for Anthropic) | Model id                                                     |
-| `api-key`             | none                                           | Provider API key (not needed for Ollama)                     |
-| `base-url`            | per provider                                   | e.g. a self-hosted Ollama URL                                |
-| `github-token`        | `${{ github.token }}`                          | Token used to read the PR and post the review                |
-| `include` / `exclude` | sensible defaults                              | Newline-separated globs                                      |
-| `max-files`           | `30`                                           | Files above this count are skipped and listed in the summary |
-| `max-diff-bytes`      | `200000`                                       | Total patch budget sent to the model                         |
-| `max-output-tokens`   | `16000`                                        | Per-request output cap                                       |
-| `min-severity`        | `low`                                          | Drop findings below `low` / `medium` / `high` / `critical`   |
-| `skip-draft`          | `true`                                         | Do nothing on draft PRs                                      |
+| Input                 | Default                         | Purpose                                                                          |
+| --------------------- | ------------------------------- | -------------------------------------------------------------------------------- |
+| `provider`            | `anthropic`                     | `anthropic`, `openai` or `ollama`                                                |
+| `model`               | `claude-opus-5-5` for Anthropic | Model id. **Required** for OpenAI and Ollama                                     |
+| `api-key`             | none                            | Provider API key (not needed for Ollama)                                         |
+| `base-url`            | vendor default                  | e.g. a self-hosted Ollama URL or an OpenAI-compatible gateway                    |
+| `effort`              | `medium`                        | Anthropic effort (`low` … `max`), always sent explicitly                         |
+| `github-token`        | `${{ github.token }}`           | Token used to read the PR and post the review                                    |
+| `include`             | `**`                            | Newline-separated globs                                                          |
+| `exclude`             | none                            | Added to built-in excludes (lockfiles, `dist/`, `vendor/`, minified, maps, SVGs) |
+| `no-default-excludes` | `false`                         | Drop the built-in excludes                                                       |
+| `max-files`           | `30`                            | Files above this count are skipped and listed in the summary                     |
+| `max-file-bytes`      | `50000`                         | Skip any single file whose patch is larger                                       |
+| `max-diff-bytes`      | `200000`                        | Total patch bytes sent to the model across all requests                          |
+| `max-output-tokens`   | `16000`                         | Per-request output cap                                                           |
+| `min-severity`        | `low`                           | Drop findings below `low` / `medium` / `high` / `critical`                       |
+| `skip-draft`          | `true`                          | Do nothing on draft PRs                                                          |
+| `dry-run`             | `false`                         | Log the review payload instead of posting it                                     |
+
+Outputs: `status` (`reviewed`, `clean`, `dry-run`, `skipped`), `inline-comments`, `summary-findings`,
+`review-url`.
+
+### Provider details
+
+- **Anthropic:** official `@anthropic-ai/sdk`, beta Messages endpoint, adaptive thinking, structured output via
+  `output_config.format` (JSON schema), explicit `effort`, and server-side refusal fallback (`fallbacks: "default"`,
+  beta `server-side-fallback-2026-07-01`). `stop_reason` is checked for `refusal` and `max_tokens` before content
+  is read.
+- **OpenAI:** Chat Completions with `response_format: json_schema, strict: true`. `refusal` and
+  `finish_reason: length` are mapped to typed errors.
+- **Ollama:** `/api/chat` with `format: <schema>`, `stream: false`, temperature 0.
 
 A repo-level `.github/ai-review.yml` (house rules, severity threshold, ignore paths) is planned for Milestone 3.
 
@@ -117,7 +146,7 @@ A repo-level `.github/ai-review.yml` (house rules, severity threshold, ignore pa
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | 0         | README, ADRs, licence                                                                                                                                                  | Done    |
 | 1         | TypeScript action skeleton: `action.yml`, inputs, vitest, eslint, esbuild bundle in `dist/`, CI that verifies `dist/` is current                                       | Done    |
-| 2         | Review engine: fetch diff, filter, chunk, provider interface (Anthropic, OpenAI, Ollama), strict JSON findings, diff-line mapping, single review, cost guardrails      | Planned |
+| 2         | Review engine: fetch diff, filter, chunk, provider interface (Anthropic, OpenAI, Ollama), strict JSON findings, diff-line mapping, single review, cost guardrails      | Done    |
 | 3         | `.github/ai-review.yml` config (rules, threshold, ignore paths), no duplicate comments on re-runs                                                                      | Planned |
 | 4         | Dogfood with a live model on this repo and on [loan-underwriting-ai](https://github.com/adilKhan72/loan-underwriting-ai). Publish real review examples and cost per PR | Planned |
 | 5         | Optional Playwright E2E test suggestions from linked user stories                                                                                                      | Planned |
@@ -131,7 +160,11 @@ npm run all      # prettier check, eslint, tsc, vitest, esbuild bundle
 ```
 
 The action runs from the committed bundle `dist/index.cjs` on the `node24` runtime. CI rebuilds it and fails if
-the committed copy is stale. It also runs the bundle as a real action (`uses: ./`) to catch a broken `action.yml`.
+the committed copy is stale. A `self-test` job then runs the bundle as a real action (`uses: ./`) against the PR
+itself, with real GitHub API calls and a mock model server (`scripts/mock-ollama.mjs`), in dry-run mode.
+
+**Not yet run against a live model.** No provider key is available to this project yet, so every provider test
+uses a mocked SDK client or `fetch` and asserts the exact request shape. Live dogfooding is Milestone 4.
 
 ## Architecture decisions
 
