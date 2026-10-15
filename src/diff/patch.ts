@@ -22,6 +22,8 @@ export interface ParsedPatch {
   /** New-file lines GitHub accepts a `side: RIGHT` review comment on: added and context lines inside a hunk. */
   commentableLines: ReadonlySet<number>;
   addedLines: ReadonlySet<number>;
+  /** Text of each new-file line present in the patch (added or context). */
+  newLineText: ReadonlyMap<number, string>;
 }
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
@@ -30,6 +32,7 @@ export function parsePatch(patch: string): ParsedPatch {
   const hunks: Hunk[] = [];
   const commentable = new Set<number>();
   const added = new Set<number>();
+  const newLineText = new Map<number, string>();
   let current: Hunk | undefined;
   let oldLine = 0;
   let newLine = 0;
@@ -52,6 +55,7 @@ export function parsePatch(patch: string): ParsedPatch {
       current.lines.push({ kind: 'add', newLine, oldLine: undefined, text });
       commentable.add(newLine);
       added.add(newLine);
+      newLineText.set(newLine, text);
       newLine++;
     } else if (marker === '-') {
       current.lines.push({ kind: 'del', newLine: undefined, oldLine, text });
@@ -59,6 +63,7 @@ export function parsePatch(patch: string): ParsedPatch {
     } else if (marker === ' ') {
       current.lines.push({ kind: 'context', newLine, oldLine, text });
       commentable.add(newLine);
+      newLineText.set(newLine, text);
       newLine++;
       oldLine++;
     }
@@ -66,7 +71,7 @@ export function parsePatch(patch: string): ParsedPatch {
     // they do not correspond to a line in either file.
   }
 
-  return { hunks, commentableLines: commentable, addedLines: added };
+  return { hunks, commentableLines: commentable, addedLines: added, newLineText };
 }
 
 /**

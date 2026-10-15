@@ -24,6 +24,10 @@ export interface Config {
   minSeverity: Severity;
   skipDraft: boolean;
   dryRun: boolean;
+  /** Repository config file, read from the PR's base commit. */
+  configPath: string;
+  /** Only comments by this account are trusted as earlier reviews when de-duplicating. */
+  reviewerLogin: string;
 }
 
 /**
@@ -103,6 +107,8 @@ export function readConfig(input: InputReader): Config {
     minSeverity: oneOf('min-severity', input('min-severity') || 'low', SEVERITIES),
     skipDraft: bool('skip-draft', input('skip-draft'), true),
     dryRun: bool('dry-run', input('dry-run'), false),
+    configPath: input('config-path') || '.github/ai-review.yml',
+    reviewerLogin: input('reviewer-login') || 'github-actions[bot]',
   };
 }
 

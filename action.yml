@@ -54,10 +54,18 @@ inputs:
   dry-run:
     description: Log the review instead of posting it.
     default: 'false'
+  config-path:
+    description: Repository config file (rules, min-severity, include, exclude, max-files), read from the base commit.
+    default: .github/ai-review.yml
+  reviewer-login:
+    description: >-
+      Account that posts the reviews. Only its earlier comments are used to skip already-reported findings.
+      Change it if github-token is not the default GITHUB_TOKEN.
+    default: github-actions[bot]
 
 outputs:
   status:
-    description: reviewed (review posted), clean (no findings, nothing posted), dry-run, or skipped.
+    description: reviewed (review posted), clean (no new findings, nothing posted), dry-run, or skipped.
   inline-comments:
     description: Number of inline comments in the review.
   summary-findings:

@@ -22,15 +22,26 @@ const config: Config = {
   minSeverity: 'low',
   skipDraft: true,
   dryRun: false,
+  configPath: '.github/ai-review.yml',
+  reviewerLogin: 'github-actions[bot]',
 };
 
-const pr: PullRequestInfo = { number: 5, headSha: 'sha5', title: 'Change', body: '', draft: false };
+const pr: PullRequestInfo = {
+  number: 5,
+  headSha: 'sha5',
+  baseSha: 'base5',
+  title: 'Change',
+  body: '',
+  draft: false,
+};
 
 function fakeGitHub(
   files: PrFile[],
   overrides: {
     getPullRequest?: Mock<GitHubApi['getPullRequest']>;
     createReview?: Mock<GitHubApi['createReview']>;
+    repoConfig?: string;
+    earlierBodies?: string[];
   } = {},
 ) {
   return {
@@ -39,6 +50,8 @@ function fakeGitHub(
     createReview:
       overrides.createReview ??
       vi.fn<GitHubApi['createReview']>().mockResolvedValue({ url: 'https://github.com/o/r/pull/5#review' }),
+    getFileContent: vi.fn<GitHubApi['getFileContent']>().mockResolvedValue(overrides.repoConfig),
+    listBodiesBy: vi.fn<GitHubApi['listBodiesBy']>().mockResolvedValue(overrides.earlierBodies ?? []),
   };
 }
 
@@ -186,5 +199,64 @@ describe('reviewPullRequest', () => {
     const provider = fakeProvider({ findings: [finding('a.ts', 1)] }, { findings: [] });
     const outcome = await reviewPullRequest(deps(fakeGitHub([big('a.ts'), big('b.ts')]), provider), config);
     expect(outcome).toMatchObject({ usage: { inputTokens: 200, outputTokens: 20 } });
+  });
+});
+
+describe('repository config', () => {
+  it('reads .github/ai-review.yml from the base commit and applies it', async () => {
+    const github = fakeGitHub([file('src/a.ts', TWO_HUNK_PATCH), file('docs/x.md', TWO_HUNK_PATCH)], {
+      repoConfig: 'rules: [Flag raw SQL]\nmin-severity: high\nexclude: ["docs/**"]\n',
+    });
+    const provider = fakeProvider({
+      findings: [finding('src/a.ts', 2, 'medium'), finding('src/a.ts', 3, 'high')],
+    });
+    const outcome = await reviewPullRequest(deps(github, provider), config);
+
+    expect(github.getFileContent).toHaveBeenCalledWith('.github/ai-review.yml', 'base5');
+    expect(provider.complete.mock.calls[0]?.[0].user).toMatch(/Additional rules[\s\S]*- Flag raw SQL/);
+    expect(provider.complete.mock.calls[0]?.[0].user).not.toContain('docs/x.md');
+    expect(outcome).toMatchObject({ status: 'reviewed', inline: 1 }); // the medium finding is below the file's threshold
+  });
+
+  it('fails clearly on an invalid config file', async () => {
+    const github = fakeGitHub([file('a.ts', TWO_HUNK_PATCH)], { repoConfig: 'min-severity: urgent' });
+    await expect(reviewPullRequest(deps(github, fakeProvider()), config)).rejects.toThrow(/min-severity/);
+  });
+});
+
+describe('de-duplication across runs', () => {
+  it('marks posted findings and skips them on the next run', async () => {
+    const files = [file('src/a.ts', TWO_HUNK_PATCH)];
+    const answer = { findings: [finding('src/a.ts', 22), finding('src/a.ts', 99)] };
+
+    const first = fakeGitHub(files);
+    await reviewPullRequest(deps(first, fakeProvider(answer)), config);
+    const posted = first.createReview.mock.calls[0]?.[0];
+    if (!posted) throw new Error('no review posted');
+    expect(posted.comments[0]?.body).toMatch(/ai-code-review-action:fp=[0-9a-f]{16}/);
+
+    // Second run: the earlier inline comment and summary are visible; the model repeats itself.
+    const second = fakeGitHub(files, { earlierBodies: [posted.body, ...posted.comments.map((c) => c.body)] });
+    const outcome = await reviewPullRequest(deps(second, fakeProvider(answer)), config);
+    expect(second.listBodiesBy).toHaveBeenCalledWith('github-actions[bot]');
+    expect(outcome).toMatchObject({ status: 'clean', inline: 0, offDiff: 0 });
+    expect(second.createReview).not.toHaveBeenCalled();
+  });
+
+  it('still reports a finding when the flagged line changed', async () => {
+    const before = fakeGitHub([file('src/a.ts', TWO_HUNK_PATCH)]);
+    await reviewPullRequest(deps(before, fakeProvider({ findings: [finding('src/a.ts', 22)] })), config);
+    const earlier = before.createReview.mock.calls[0]?.[0].comments.map((c) => c.body) ?? [];
+
+    const changedPatch = TWO_HUNK_PATCH.replace(
+      'DELETE FROM t WHERE id = ${id}',
+      'DELETE FROM t WHERE id = $1',
+    );
+    const after = fakeGitHub([file('src/a.ts', changedPatch)], { earlierBodies: earlier });
+    const outcome = await reviewPullRequest(
+      deps(after, fakeProvider({ findings: [finding('src/a.ts', 22)] })),
+      config,
+    );
+    expect(outcome).toMatchObject({ status: 'reviewed', inline: 1 });
   });
 });

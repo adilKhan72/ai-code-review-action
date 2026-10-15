@@ -12,6 +12,12 @@ describe('parsePatch', () => {
     expect([...parsed.commentableLines].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 21, 22, 23]);
   });
 
+  it('keeps the text of new-file lines, for fingerprinting', () => {
+    expect(parsed.newLineText.get(22)).toBe('  return db.query(`DELETE FROM t WHERE id = ${id}`);');
+    expect(parsed.newLineText.get(1)).toBe("import { db } from './db';");
+    expect(parsed.newLineText.has(24)).toBe(false);
+  });
+
   it('records old-file numbers for deletions', () => {
     const deletions = parsed.hunks.flatMap((h) => h.lines).filter((l) => l.kind === 'del');
     expect(deletions.map((l) => [l.oldLine, l.newLine])).toEqual([

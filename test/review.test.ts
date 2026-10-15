@@ -87,6 +87,7 @@ describe('buildReview', () => {
     failedChunks: ['`src/z.ts`: refusal'],
     usage: { inputTokens: 1000, outputTokens: 200 },
     belowThreshold: 3,
+    alreadyReported: 0,
   };
   const review = buildReview(summary);
 
@@ -107,6 +108,20 @@ describe('buildReview', () => {
     expect(review.body).toContain('- `yarn.lock`: matched by exclude');
     expect(review.body).toContain('1000 input / 200 output tokens');
     expect(review.body).toContain('3 below min-severity hidden');
+  });
+
+  it('embeds fingerprint markers in comments and summary lines, and counts earlier reports', () => {
+    const withFp = buildReview({
+      ...summary,
+      inline: [{ ...f('src/a.ts', 2, 'high'), fingerprint: '0123456789abcdef' }],
+      offDiff: [{ ...f('src/c.ts', 9, 'low'), fingerprint: 'fedcba9876543210' }],
+      alreadyReported: 2,
+    });
+    expect(withFp.comments[0]?.body).toMatch(/<!-- ai-code-review-action:fp=0123456789abcdef -->$/);
+    expect(withFp.body).toContain(
+      '`src/c.ts:9` issue src/c.ts:9 <!-- ai-code-review-action:fp=fedcba9876543210 -->',
+    );
+    expect(withFp.body).toContain('2 already reported earlier');
   });
 
   it('escapes Markdown in model-written titles', () => {

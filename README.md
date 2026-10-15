@@ -124,6 +124,8 @@ jobs:
 | `min-severity`        | `low`                           | Drop findings below `low` / `medium` / `high` / `critical`                       |
 | `skip-draft`          | `true`                          | Do nothing on draft PRs                                                          |
 | `dry-run`             | `false`                         | Log the review payload instead of posting it                                     |
+| `config-path`         | `.github/ai-review.yml`         | Repository config file, read from the base commit                                |
+| `reviewer-login`      | `github-actions[bot]`           | Whose earlier comments count for de-duplication. Change it when using a PAT/App  |
 
 Outputs: `status` (`reviewed`, `clean`, `dry-run`, `skipped`), `inline-comments`, `summary-findings`,
 `review-url`.
@@ -138,7 +140,31 @@ Outputs: `status` (`reviewed`, `clean`, `dry-run`, `skipped`), `inline-comments`
   `finish_reason: length` are mapped to typed errors.
 - **Ollama:** `/api/chat` with `format: <schema>`, `stream: false`, temperature 0.
 
-A repo-level `.github/ai-review.yml` (house rules, severity threshold, ignore paths) is planned for Milestone 3.
+### Repository config: `.github/ai-review.yml`
+
+Optional. House rules and overrides that live with the code:
+
+```yaml
+rules: # up to 20, each up to 500 characters; added to every prompt
+  - Money is integer cents. Flag floats used for currency.
+  - Every new API endpoint needs an authorization check.
+min-severity: medium # overrides the input
+include: ['src/**', 'app/**'] # overrides the input
+exclude: ['**/*.generated.ts'] # added to the input's excludes
+max-files: 20 # overrides the input
+```
+
+- The file is read from the PR's **base commit**, not the head. A pull request cannot loosen the rules it is reviewed
+  under, or inject its own "rules" into the prompt.
+- Unknown keys produce a warning. Wrong types fail the step with a message naming the key.
+- This repository's own [`.github/ai-review.yml`](.github/ai-review.yml) is a working example.
+
+### Re-runs and new pushes
+
+Every finding the action posts carries a hidden fingerprint: a hash of the path, the normalised title and the
+**text** of the flagged line. Before posting, the action collects fingerprints from earlier comments and review
+summaries written by `reviewer-login` (default `github-actions[bot]`), and drops findings that were already
+reported. If the flagged line itself changes, the finding counts as new. If nothing new remains, nothing is posted.
 
 ## Roadmap
 
@@ -147,7 +173,7 @@ A repo-level `.github/ai-review.yml` (house rules, severity threshold, ignore pa
 | 0         | README, ADRs, licence                                                                                                                                                  | Done    |
 | 1         | TypeScript action skeleton: `action.yml`, inputs, vitest, eslint, esbuild bundle in `dist/`, CI that verifies `dist/` is current                                       | Done    |
 | 2         | Review engine: fetch diff, filter, chunk, provider interface (Anthropic, OpenAI, Ollama), strict JSON findings, diff-line mapping, single review, cost guardrails      | Done    |
-| 3         | `.github/ai-review.yml` config (rules, threshold, ignore paths), no duplicate comments on re-runs                                                                      | Planned |
+| 3         | `.github/ai-review.yml` config (rules, threshold, ignore paths), no duplicate comments on re-runs                                                                      | Done    |
 | 4         | Dogfood with a live model on this repo and on [loan-underwriting-ai](https://github.com/adilKhan72/loan-underwriting-ai). Publish real review examples and cost per PR | Planned |
 | 5         | Optional Playwright E2E test suggestions from linked user stories                                                                                                      | Planned |
 | 6         | `v1` release and GitHub Marketplace listing                                                                                                                            | Planned |
