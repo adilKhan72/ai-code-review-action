@@ -47,15 +47,15 @@ flowchart LR
     S --> R
 ```
 
-| Step | Module (planned) | Notes |
-|---|---|---|
-| Fetch | `src/github/` | `pulls.listFiles` gives per-file patches without cloning the repo |
-| Filter | `src/filter.ts` | include/exclude globs, per-file byte cap, skip binaries and removed files |
-| Diff model | `src/diff/` | parse unified-diff hunks into the set of commentable `RIGHT`-side lines |
-| Chunk | `src/chunk.ts` | whole files per chunk where possible, never more than the byte budget |
-| Provider | `src/providers/` | `Provider.review(prompt) → Finding[]`. Anthropic, OpenAI, Ollama |
-| Map | `src/review/` | move off-diff findings to the summary and dedupe, then build the review payload |
-| Post | `src/github/` | a single `POST /pulls/{n}/reviews` with `event: COMMENT` (never approves or blocks) |
+| Step       | Module (planned) | Notes                                                                               |
+| ---------- | ---------------- | ----------------------------------------------------------------------------------- |
+| Fetch      | `src/github/`    | `pulls.listFiles` gives per-file patches without cloning the repo                   |
+| Filter     | `src/filter.ts`  | include/exclude globs, per-file byte cap, skip binaries and removed files           |
+| Diff model | `src/diff/`      | parse unified-diff hunks into the set of commentable `RIGHT`-side lines             |
+| Chunk      | `src/chunk.ts`   | whole files per chunk where possible, never more than the byte budget               |
+| Provider   | `src/providers/` | `Provider.review(prompt) → Finding[]`. Anthropic, OpenAI, Ollama                    |
+| Map        | `src/review/`    | move off-diff findings to the summary and dedupe, then build the review payload     |
+| Post       | `src/github/`    | a single `POST /pulls/{n}/reviews` with `event: COMMENT` (never approves or blocks) |
 
 ## Usage
 
@@ -95,33 +95,43 @@ jobs:
 Inputs as planned. They are implemented milestone by milestone. `action.yml` is the source of truth once it
 exists.
 
-| Input | Default | Purpose |
-|---|---|---|
-| `provider` | `anthropic` | `anthropic`, `openai` or `ollama` |
-| `model` | per provider (`claude-opus-5-5` for Anthropic) | Model id |
-| `api-key` | none | Provider API key (not needed for Ollama) |
-| `base-url` | per provider | e.g. a self-hosted Ollama URL |
-| `github-token` | `${{ github.token }}` | Token used to read the PR and post the review |
-| `include` / `exclude` | sensible defaults | Newline-separated globs |
-| `max-files` | `30` | Files above this count are skipped and listed in the summary |
-| `max-diff-bytes` | `200000` | Total patch budget sent to the model |
-| `max-output-tokens` | `16000` | Per-request output cap |
-| `min-severity` | `low` | Drop findings below `low` / `medium` / `high` / `critical` |
-| `skip-draft` | `true` | Do nothing on draft PRs |
+| Input                 | Default                                        | Purpose                                                      |
+| --------------------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| `provider`            | `anthropic`                                    | `anthropic`, `openai` or `ollama`                            |
+| `model`               | per provider (`claude-opus-5-5` for Anthropic) | Model id                                                     |
+| `api-key`             | none                                           | Provider API key (not needed for Ollama)                     |
+| `base-url`            | per provider                                   | e.g. a self-hosted Ollama URL                                |
+| `github-token`        | `${{ github.token }}`                          | Token used to read the PR and post the review                |
+| `include` / `exclude` | sensible defaults                              | Newline-separated globs                                      |
+| `max-files`           | `30`                                           | Files above this count are skipped and listed in the summary |
+| `max-diff-bytes`      | `200000`                                       | Total patch budget sent to the model                         |
+| `max-output-tokens`   | `16000`                                        | Per-request output cap                                       |
+| `min-severity`        | `low`                                          | Drop findings below `low` / `medium` / `high` / `critical`   |
+| `skip-draft`          | `true`                                         | Do nothing on draft PRs                                      |
 
 A repo-level `.github/ai-review.yml` (house rules, severity threshold, ignore paths) is planned for Milestone 3.
 
 ## Roadmap
 
-| Milestone | Scope | Status |
-|---|---|---|
-| 0 | README, ADRs, licence | Done |
-| 1 | TypeScript action skeleton: `action.yml`, inputs, vitest, eslint, esbuild bundle in `dist/`, CI that verifies `dist/` is current | Planned |
-| 2 | Review engine: fetch diff, filter, chunk, provider interface (Anthropic, OpenAI, Ollama), strict JSON findings, diff-line mapping, single review, cost guardrails | Planned |
-| 3 | `.github/ai-review.yml` config (rules, threshold, ignore paths), no duplicate comments on re-runs | Planned |
-| 4 | Dogfood with a live model on this repo and on [loan-underwriting-ai](https://github.com/adilKhan72/loan-underwriting-ai). Publish real review examples and cost per PR | Planned |
-| 5 | Optional Playwright E2E test suggestions from linked user stories | Planned |
-| 6 | `v1` release and GitHub Marketplace listing | Planned |
+| Milestone | Scope                                                                                                                                                                  | Status  |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| 0         | README, ADRs, licence                                                                                                                                                  | Done    |
+| 1         | TypeScript action skeleton: `action.yml`, inputs, vitest, eslint, esbuild bundle in `dist/`, CI that verifies `dist/` is current                                       | Done    |
+| 2         | Review engine: fetch diff, filter, chunk, provider interface (Anthropic, OpenAI, Ollama), strict JSON findings, diff-line mapping, single review, cost guardrails      | Planned |
+| 3         | `.github/ai-review.yml` config (rules, threshold, ignore paths), no duplicate comments on re-runs                                                                      | Planned |
+| 4         | Dogfood with a live model on this repo and on [loan-underwriting-ai](https://github.com/adilKhan72/loan-underwriting-ai). Publish real review examples and cost per PR | Planned |
+| 5         | Optional Playwright E2E test suggestions from linked user stories                                                                                                      | Planned |
+| 6         | `v1` release and GitHub Marketplace listing                                                                                                                            | Planned |
+
+## Development
+
+```bash
+npm ci
+npm run all      # prettier check, eslint, tsc, vitest, esbuild bundle
+```
+
+The action runs from the committed bundle `dist/index.cjs` on the `node24` runtime. CI rebuilds it and fails if
+the committed copy is stale. It also runs the bundle as a real action (`uses: ./`) to catch a broken `action.yml`.
 
 ## Architecture decisions
 

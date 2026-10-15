@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: dist/ is up to date
+        run: |
+          if ! git diff --exit-code --stat -- dist/; then
+            echo "::error::dist/ is stale. Run 'npm run build' and commit the result."
+            exit 1
+          fi
+
+  # Runs the committed bundle as a real action, so a broken dist/ or action.yml fails CI.
+  self-test:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: review
+        uses: ./
+        with:
+          provider: ollama
+          model: smoke-test
+          dry-run: 'true'
+      - name: Check output
+        env:
+          STATUS: ${{ steps.review.outputs.status }}
+        run: |
+          echo "status=$STATUS"
+          test -n "$STATUS"
