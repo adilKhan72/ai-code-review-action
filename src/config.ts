@@ -28,7 +28,13 @@ export interface Config {
   configPath: string;
   /** Only comments by this account are trusted as earlier reviews when de-duplicating. */
   reviewerLogin: string;
+  /** Opt-in: ask for tests for changed source files that have no matching test changes. */
+  suggestTests: boolean;
+  maxTestSuggestions: number;
 }
+
+/** Upper bound for `max-test-suggestions`. Each suggestion is a whole test file in the review summary. */
+export const MAX_TEST_SUGGESTIONS = 10;
 
 /**
  * Only Anthropic gets a default model. OpenAI and Ollama model names change often and Ollama depends on what the
@@ -109,6 +115,8 @@ export function readConfig(input: InputReader): Config {
     dryRun: bool('dry-run', input('dry-run'), false),
     configPath: input('config-path') || '.github/ai-review.yml',
     reviewerLogin: input('reviewer-login') || 'github-actions[bot]',
+    suggestTests: bool('suggest-tests', input('suggest-tests'), false),
+    maxTestSuggestions: maxTestSuggestions(input('max-test-suggestions')),
   };
 }
 
@@ -128,6 +136,16 @@ function positiveInt(name: string, raw: string, fallback: number): number {
   const n = Number(raw.trim());
   if (n <= 0 || !Number.isSafeInteger(n)) {
     throw new ConfigError(`Input "${name}" must be a positive integer; got "${raw}".`);
+  }
+  return n;
+}
+
+function maxTestSuggestions(raw: string): number {
+  const n = positiveInt('max-test-suggestions', raw, 5);
+  if (n > MAX_TEST_SUGGESTIONS) {
+    throw new ConfigError(
+      `Input "max-test-suggestions" must be at most ${String(MAX_TEST_SUGGESTIONS)}; got "${raw}".`,
+    );
   }
   return n;
 }

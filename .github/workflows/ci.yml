@@ -50,16 +50,19 @@ jobs:
           provider: ollama
           model: mock
           dry-run: 'true'
+          suggest-tests: 'true'
       - name: Check outputs
         env:
           STATUS: ${{ steps.review.outputs.status }}
           INLINE: ${{ steps.review.outputs.inline-comments }}
+          SUGGESTIONS: ${{ steps.review.outputs.test-suggestions }}
           EVENT: ${{ github.event_name }}
         run: |
-          echo "status=$STATUS inline=$INLINE"
+          echo "status=$STATUS inline=$INLINE suggestions=$SUGGESTIONS"
           if [ "$EVENT" = pull_request ]; then
             test "$STATUS" = dry-run
             test "$INLINE" -ge 1  # the mock answers each request with one finding
+            test "$SUGGESTIONS" -ge 0  # depends on whether the PR changes source without tests
           else
             test "$STATUS" = skipped
           fi

@@ -18,6 +18,8 @@ export interface GitHubApi {
   createReview(review: ReviewPayload): Promise<{ url: string }>;
   /** File text at a commit, or undefined if the file does not exist there. */
   getFileContent(path: string, ref: string): Promise<string | undefined>;
+  /** Names of the files (not directories) in a directory at a commit; empty if it does not exist. */
+  listDirectory(path: string, ref: string): Promise<string[]>;
   /** Bodies of review comments and review summaries on this PR written by `login`. */
   listBodiesBy(login: string): Promise<string[]>;
 }
@@ -59,6 +61,16 @@ export function gitHubApi(
       } catch (err) {
         if (typeof err === 'object' && err !== null && (err as { status?: unknown }).status === 404)
           return undefined;
+        throw err;
+      }
+    },
+    async listDirectory(path, ref) {
+      try {
+        const { data } = await octokit.rest.repos.getContent({ ...repo, path, ref });
+        return Array.isArray(data) ? data.filter((e) => e.type === 'file').map((e) => e.name) : [];
+      } catch (err) {
+        if (typeof err === 'object' && err !== null && (err as { status?: unknown }).status === 404)
+          return [];
         throw err;
       }
     },

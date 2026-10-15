@@ -33,12 +33,14 @@ async function main(): Promise<void> {
   }
   core.setOutput('inline-comments', outcome.inline);
   core.setOutput('summary-findings', outcome.offDiff);
+  core.setOutput('test-suggestions', outcome.testSuggestions);
   if (outcome.url) {
     core.setOutput('review-url', outcome.url);
     core.info(`Review posted: ${outcome.url}`);
   }
   core.info(
     `Done: ${String(outcome.inline)} inline, ${String(outcome.offDiff)} in summary, ` +
+      `${String(outcome.testSuggestions)} test suggestions, ` +
       `${String(outcome.usage.inputTokens)}/${String(outcome.usage.outputTokens)} tokens in/out.`,
   );
 }

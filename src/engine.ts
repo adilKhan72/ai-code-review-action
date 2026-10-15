@@ -10,6 +10,7 @@ import { applyRepoConfig, parseRepoConfig } from './repo-config.js';
 import { extractFingerprints, fingerprint } from './review/fingerprint.js';
 import { mapFindings } from './review/map.js';
 import { buildReview, type ReviewPayload } from './review/payload.js';
+import { suggestTests, type SuggestOutcome } from './suggest/index.js';
 import type { Finding, SkippedFile, TokenUsage } from './types.js';
 
 /** Soft per-request diff budget (about 15k tokens of code). Keeps each request focused and within timeouts. */
@@ -28,6 +29,7 @@ export type ReviewOutcome =
       status: 'reviewed' | 'clean' | 'dry-run';
       inline: number;
       offDiff: number;
+      testSuggestions: number;
       failedChunks: number;
       usage: TokenUsage;
       url?: string;
@@ -56,6 +58,8 @@ type ReviewConfig = Pick<
   | 'model'
   | 'configPath'
   | 'reviewerLogin'
+  | 'suggestTests'
+  | 'maxTestSuggestions'
 >;
 
 export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig): Promise<ReviewOutcome> {
@@ -79,11 +83,11 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
 
   const files = await github.listFiles();
   const filtered = selectFiles(files, { ...config, ...settings });
-  const { chunks, skipped: overBudget } = chunkFiles(
-    filtered.selected,
-    Math.min(MAX_CHUNK_BYTES, config.maxDiffBytes),
-    config.maxDiffBytes,
-  );
+  const {
+    chunks,
+    skipped: overBudget,
+    totalBytes,
+  } = chunkFiles(filtered.selected, Math.min(MAX_CHUNK_BYTES, config.maxDiffBytes), config.maxDiffBytes);
   const skipped: SkippedFile[] = [...filtered.skipped, ...overBudget];
   if (chunks.length === 0) {
     return { status: 'skipped', reason: `no reviewable files (${String(skipped.length)} skipped)` };
@@ -148,14 +152,38 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
   }
   if (alreadyReported > 0) log.info(`${String(alreadyReported)} findings were already reported earlier.`);
 
+  let tests: SuggestOutcome | undefined;
+  if (config.suggestTests) {
+    tests = await suggestTests(deps, {
+      title: pr.title,
+      baseSha: pr.baseSha,
+      allFiles: files,
+      reviewed: chunks.flat(),
+      earlier,
+      // The suggestion request re-sends patches, so it shares the max-diff-bytes budget with the review.
+      budgetBytes: config.maxDiffBytes - totalBytes,
+      maxSuggestions: config.maxTestSuggestions,
+      maxOutputTokens: config.maxOutputTokens,
+    });
+    usage.inputTokens += tests.usage.inputTokens;
+    usage.outputTokens += tests.usage.outputTokens;
+  }
+
   const mapped = mapFindings(fresh, commentable, settings.minSeverity, MAX_INLINE_COMMENTS);
   const counts = {
     inline: mapped.inline.length,
     offDiff: mapped.offDiff.length,
     failedChunks: failedChunks.length,
+    testSuggestions: tests?.suggestions.length ?? 0,
     usage,
   };
-  if (counts.inline === 0 && counts.offDiff === 0 && failedChunks.length === 0) {
+  const nothingToSay =
+    counts.inline === 0 &&
+    counts.offDiff === 0 &&
+    failedChunks.length === 0 &&
+    counts.testSuggestions === 0 &&
+    tests?.failure === undefined;
+  if (nothingToSay) {
     // Posting "no issues" on every push is noise; the job log and the `status` output are enough.
     log.info('No new findings; not posting a review.');
     return { status: 'clean', ...counts };
@@ -172,6 +200,7 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
     usage,
     belowThreshold: mapped.belowThreshold,
     alreadyReported,
+    tests,
   };
   const payload = buildReview(summary);
   if (config.dryRun) {
