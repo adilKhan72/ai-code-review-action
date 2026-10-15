@@ -1,0 +1,64 @@
+name: AI Code Review (diff-anchored)
+description: LLM pull-request review with inline comments validated against the diff and hard cost guardrails.
+author: Adil Khan
+branding:
+  icon: eye
+  color: purple
+
+inputs:
+  provider:
+    description: LLM provider. One of anthropic, openai, ollama.
+    default: anthropic
+  model:
+    description: Model id. Defaults to claude-opus-5-5 for anthropic; required for openai and ollama.
+    default: ''
+  api-key:
+    description: Provider API key. Not needed for ollama. Pass it from a secret.
+    default: ''
+  base-url:
+    description: Override the provider endpoint (for example a self-hosted Ollama URL).
+    default: ''
+  effort:
+    description: Anthropic effort level (low, medium, high, xhigh, max).
+    default: medium
+  github-token:
+    description: Token used to read the pull request and post the review.
+    default: ${{ github.token }}
+  include:
+    description: Newline-separated globs of files to review.
+    default: '**'
+  exclude:
+    description: Newline-separated globs to skip, added to the built-in excludes (lockfiles, dist, vendor, ...).
+    default: ''
+  no-default-excludes:
+    description: Set to true to drop the built-in exclude list.
+    default: 'false'
+  max-files:
+    description: Review at most this many files; the rest are listed in the summary.
+    default: '30'
+  max-diff-bytes:
+    description: Total patch bytes sent to the model across all requests.
+    default: '200000'
+  max-file-bytes:
+    description: Files whose patch is larger than this are skipped.
+    default: '50000'
+  max-output-tokens:
+    description: Output token cap per model request.
+    default: '16000'
+  min-severity:
+    description: Drop findings below this severity (low, medium, high, critical).
+    default: low
+  skip-draft:
+    description: Do nothing on draft pull requests.
+    default: 'true'
+  dry-run:
+    description: Log the review instead of posting it.
+    default: 'false'
+
+outputs:
+  status:
+    description: reviewed, skipped or not-implemented.
+
+runs:
+  using: node24
+  main: dist/index.cjs
