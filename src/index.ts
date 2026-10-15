@@ -1,21 +1,48 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import { reviewPullRequest } from './engine.js';
+import { gitHubApi } from './github.js';
 import { run } from './main.js';
+import { createProvider } from './providers/index.js';
 
-const payload = github.context.payload;
-
-try {
-  const result = run(core, {
+async function main(): Promise<void> {
+  const payload = github.context.payload;
+  const prepared = run(core, {
     eventName: github.context.eventName,
     pullRequest: payload.pull_request
       ? { number: payload.pull_request.number, draft: payload.pull_request['draft'] === true }
       : undefined,
     repo: github.context.repo,
   });
-  if (result?.status === 'ready') {
-    core.warning('The review engine is not implemented yet (Milestone 2). No review was posted.');
-    core.setOutput('status', 'not-implemented');
+  if (prepared?.status !== 'ready') return;
+
+  const { config, pullNumber } = prepared;
+  const outcome = await reviewPullRequest(
+    {
+      github: gitHubApi(github.getOctokit(config.githubToken), github.context.repo, pullNumber),
+      provider: createProvider(config),
+      log: core,
+    },
+    config,
+  );
+
+  core.setOutput('status', outcome.status);
+  if (outcome.status === 'skipped') {
+    core.info(`Skipping: ${outcome.reason}.`);
+    return;
   }
-} catch (err) {
-  core.setFailed(err instanceof Error ? err.message : String(err));
+  core.setOutput('inline-comments', outcome.inline);
+  core.setOutput('summary-findings', outcome.offDiff);
+  if (outcome.url) {
+    core.setOutput('review-url', outcome.url);
+    core.info(`Review posted: ${outcome.url}`);
+  }
+  core.info(
+    `Done: ${String(outcome.inline)} inline, ${String(outcome.offDiff)} in summary, ` +
+      `${String(outcome.usage.inputTokens)}/${String(outcome.usage.outputTokens)} tokens in/out.`,
+  );
 }
+
+main().catch((err: unknown) => {
+  core.setFailed(err instanceof Error ? err.message : String(err));
+});

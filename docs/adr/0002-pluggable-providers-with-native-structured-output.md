@@ -10,7 +10,9 @@ code to a third party at all. Asking a model to "reply in JSON" in free text bre
 
 ## Decision
 
-- One small interface: `Provider.review(request) → Finding[]`. The rest of the pipeline never sees vendor types.
+- One small interface: `Provider.complete({system, user, schema, maxOutputTokens}) → {json, usage, model}`.
+  Adapters map vendor-specific refusal and truncation signals to one typed `ProviderError`. Validating the JSON
+  into findings is shared code, not per-vendor. The rest of the pipeline never sees vendor types.
 - Adapters:
   - **Anthropic** (default) through the official `@anthropic-ai/sdk`. Default model `claude-opus-5-5`, structured
     output through `output_config.format` (JSON schema), and effort set explicitly. It uses the server-side

@@ -30,21 +30,36 @@ jobs:
             exit 1
           fi
 
-  # Runs the committed bundle as a real action, so a broken dist/ or action.yml fails CI.
+  # Runs the committed bundle as a real action against this PR: real GitHub API calls, real HTTP to a mock
+  # model server. Dry run, so nothing is posted. Catches a broken dist/, action.yml or wiring.
   self-test:
     needs: check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
+      - name: Start mock model server
+        run: |
+          node scripts/mock-ollama.mjs &
+          for i in $(seq 1 20); do curl -s -o /dev/null localhost:11434 && break; sleep 0.5; done
       - id: review
         uses: ./
         with:
           provider: ollama
-          model: smoke-test
+          model: mock
           dry-run: 'true'
-      - name: Check output
+      - name: Check outputs
         env:
           STATUS: ${{ steps.review.outputs.status }}
+          INLINE: ${{ steps.review.outputs.inline-comments }}
+          EVENT: ${{ github.event_name }}
         run: |
-          echo "status=$STATUS"
-          test -n "$STATUS"
+          echo "status=$STATUS inline=$INLINE"
+          if [ "$EVENT" = pull_request ]; then
+            test "$STATUS" = dry-run
+            test "$INLINE" = 1
+          else
+            test "$STATUS" = skipped
+          fi
