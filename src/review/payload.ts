@@ -1,3 +1,4 @@
+import { renderSuggestions, type SuggestionSection } from '../suggest/render.js';
 import type { Finding, SkippedFile, TokenUsage } from '../types.js';
 import { fingerprintMarker } from './fingerprint.js';
 
@@ -30,6 +31,8 @@ export interface ReviewSummary {
   usage: TokenUsage;
   belowThreshold: number;
   alreadyReported: number;
+  /** Present when `suggest-tests` is on. */
+  tests?: SuggestionSection | undefined;
 }
 
 const BADGE: Record<Finding['severity'], string> = {
@@ -90,6 +93,11 @@ function summaryBody(s: ReviewSummary): string {
     lines.push('', `<details><summary>${plural(s.skipped.length, 'file')} not reviewed</summary>`, '');
     for (const f of s.skipped) lines.push(`- \`${f.path}\`: ${f.reason}`);
     lines.push('', '</details>');
+  }
+
+  if (s.tests) {
+    const section = renderSuggestions(s.tests);
+    if (section) lines.push('', section);
   }
 
   const footer = [

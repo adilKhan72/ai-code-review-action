@@ -58,6 +58,7 @@ flowchart LR
 | Provider | `src/providers/`                | `complete({system, user, schema})`. Anthropic SDK, OpenAI and Ollama over `fetch`. Typed refusal/truncation errors      |
 | Validate | `src/findings.ts`               | one shared JSON schema, then a strict re-check. Findings for files not in that request are dropped as invented          |
 | Map      | `src/review/map.ts`             | severity threshold, de-duplication, anchor check, inline cap of 25. Everything else goes to the summary                 |
+| Tests    | `src/suggest/`                  | opt-in: framework detection, target selection, suggestion schema, rendering (ADR-0004)                                  |
 | Post     | `src/review/payload.ts`, engine | one `COMMENT` review pinned to the head SHA. On `422` (diff moved under us), re-posts with every finding in the summary |
 
 Failure handling: if one request fails (refusal, truncation, bad JSON, HTTP error), the review is still posted and
@@ -106,29 +107,31 @@ jobs:
 
 `action.yml` is the source of truth.
 
-| Input                 | Default                         | Purpose                                                                          |
-| --------------------- | ------------------------------- | -------------------------------------------------------------------------------- |
-| `provider`            | `anthropic`                     | `anthropic`, `openai` or `ollama`                                                |
-| `model`               | `claude-opus-5-5` for Anthropic | Model id. **Required** for OpenAI and Ollama                                     |
-| `api-key`             | none                            | Provider API key (not needed for Ollama)                                         |
-| `base-url`            | vendor default                  | e.g. a self-hosted Ollama URL or an OpenAI-compatible gateway                    |
-| `effort`              | `medium`                        | Anthropic effort (`low` … `max`), always sent explicitly                         |
-| `github-token`        | `${{ github.token }}`           | Token used to read the PR and post the review                                    |
-| `include`             | `**`                            | Newline-separated globs                                                          |
-| `exclude`             | none                            | Added to built-in excludes (lockfiles, `dist/`, `vendor/`, minified, maps, SVGs) |
-| `no-default-excludes` | `false`                         | Drop the built-in excludes                                                       |
-| `max-files`           | `30`                            | Files above this count are skipped and listed in the summary                     |
-| `max-file-bytes`      | `50000`                         | Skip any single file whose patch is larger                                       |
-| `max-diff-bytes`      | `200000`                        | Total patch bytes sent to the model across all requests                          |
-| `max-output-tokens`   | `16000`                         | Per-request output cap                                                           |
-| `min-severity`        | `low`                           | Drop findings below `low` / `medium` / `high` / `critical`                       |
-| `skip-draft`          | `true`                          | Do nothing on draft PRs                                                          |
-| `dry-run`             | `false`                         | Log the review payload instead of posting it                                     |
-| `config-path`         | `.github/ai-review.yml`         | Repository config file, read from the base commit                                |
-| `reviewer-login`      | `github-actions[bot]`           | Whose earlier comments count for de-duplication. Change it when using a PAT/App  |
+| Input                  | Default                         | Purpose                                                                          |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------------- |
+| `provider`             | `anthropic`                     | `anthropic`, `openai` or `ollama`                                                |
+| `model`                | `claude-opus-5-5` for Anthropic | Model id. **Required** for OpenAI and Ollama                                     |
+| `api-key`              | none                            | Provider API key (not needed for Ollama)                                         |
+| `base-url`             | vendor default                  | e.g. a self-hosted Ollama URL or an OpenAI-compatible gateway                    |
+| `effort`               | `medium`                        | Anthropic effort (`low` … `max`), always sent explicitly                         |
+| `github-token`         | `${{ github.token }}`           | Token used to read the PR and post the review                                    |
+| `include`              | `**`                            | Newline-separated globs                                                          |
+| `exclude`              | none                            | Added to built-in excludes (lockfiles, `dist/`, `vendor/`, minified, maps, SVGs) |
+| `no-default-excludes`  | `false`                         | Drop the built-in excludes                                                       |
+| `max-files`            | `30`                            | Files above this count are skipped and listed in the summary                     |
+| `max-file-bytes`       | `50000`                         | Skip any single file whose patch is larger                                       |
+| `max-diff-bytes`       | `200000`                        | Total patch bytes sent to the model across all requests                          |
+| `max-output-tokens`    | `16000`                         | Per-request output cap                                                           |
+| `min-severity`         | `low`                           | Drop findings below `low` / `medium` / `high` / `critical`                       |
+| `skip-draft`           | `true`                          | Do nothing on draft PRs                                                          |
+| `dry-run`              | `false`                         | Log the review payload instead of posting it                                     |
+| `config-path`          | `.github/ai-review.yml`         | Repository config file, read from the base commit                                |
+| `reviewer-login`       | `github-actions[bot]`           | Whose earlier comments count for de-duplication. Change it when using a PAT/App  |
+| `suggest-tests`        | `false`                         | Also suggest tests for changed source files without test changes (one request)   |
+| `max-test-suggestions` | `5`                             | Cap on test suggestions per run (1–10)                                           |
 
 Outputs: `status` (`reviewed`, `clean`, `dry-run`, `skipped`), `inline-comments`, `summary-findings`,
-`review-url`.
+`test-suggestions`, `review-url`.
 
 ### Provider details
 
@@ -166,6 +169,28 @@ Every finding the action posts carries a hidden fingerprint: a hash of the path,
 summaries written by `reviewer-login` (default `github-actions[bot]`), and drops findings that were already
 reported. If the flagged line itself changes, the finding counts as new. If nothing new remains, nothing is posted.
 
+### Test suggestions (opt-in)
+
+With `suggest-tests: true`, the action looks for changed source files that have **no matching test change** in the
+same PR and asks the model, in one extra request, for a few focused tests for them. They appear in the review
+summary as collapsed blocks. Nothing is committed or pushed.
+
+- **Frameworks are detected, not guessed.** From the base commit's root: vitest or jest (config file or
+  `package.json`), pytest (`pytest.ini`, `conftest.py`, `pyproject.toml`, `setup.cfg`, `tox.ini`), PHPUnit
+  (`phpunit.xml[.dist]`, `composer.json`) and Playwright (`playwright.config.*`, `@playwright/test`). The schema
+  only allows the detected frameworks, and each suggestion must fit its file's language.
+- **Playwright E2E specs** are suggested only for UI files (`.tsx`, `.jsx`, `.vue`, `.svelte`, or files under
+  `pages/`, `app/`, `routes/`, `views/`, `components/`, `layouts/`) and only when Playwright is configured.
+- **"Matching test change"** means a changed test file with the same stem: `src/map.ts` is covered by
+  `test/map.test.ts`, `src/__tests__/map.spec.ts`, `tests/test_map.py` or `tests/MapTest.php`.
+- **Caps:** `max-test-suggestions` (default 5, max 10), 6,000 characters of code per suggestion (longer ones are
+  dropped), 10 files and 40 KB of patch per request, and the request counts against `max-diff-bytes`.
+- **No repeats:** a file whose patch has not changed since its suggestions were posted is not sent again, and a
+  suggestion with an already-posted title is dropped.
+- Suggestions are drafted from the diff alone and **never run**. Check imports and fixtures before using them.
+
+See [ADR-0004](docs/adr/0004-test-suggestions-in-the-summary.md) for the reasoning.
+
 ## Roadmap
 
 | Milestone | Scope                                                                                                                                                                  | Status  |
@@ -175,7 +200,7 @@ reported. If the flagged line itself changes, the finding counts as new. If noth
 | 2         | Review engine: fetch diff, filter, chunk, provider interface (Anthropic, OpenAI, Ollama), strict JSON findings, diff-line mapping, single review, cost guardrails      | Done    |
 | 3         | `.github/ai-review.yml` config (rules, threshold, ignore paths), no duplicate comments on re-runs                                                                      | Done    |
 | 4         | Dogfood with a live model on this repo and on [loan-underwriting-ai](https://github.com/adilKhan72/loan-underwriting-ai). Publish real review examples and cost per PR | Planned |
-| 5         | Optional Playwright E2E test suggestions from linked user stories                                                                                                      | Planned |
+| 5         | Opt-in test suggestions: unit tests in the detected framework (vitest/jest/pytest/PHPUnit) and Playwright specs for changed UI files, in the review summary            | Done    |
 | 6         | `v1` release and GitHub Marketplace listing                                                                                                                            | Planned |
 
 ## Development
@@ -197,6 +222,7 @@ uses a mocked SDK client or `fetch` and asserts the exact request shape. Live do
 - [ADR-0001: Comment only on diff lines](docs/adr/0001-comment-only-on-diff-lines.md)
 - [ADR-0002: Pluggable providers with native structured output](docs/adr/0002-pluggable-providers-with-native-structured-output.md)
 - [ADR-0003: The diff is untrusted input](docs/adr/0003-diff-is-untrusted-input.md)
+- [ADR-0004: Test suggestions are opt-in and only shown in the summary](docs/adr/0004-test-suggestions-in-the-summary.md)
 
 ## Licence
 

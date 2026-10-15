@@ -24,6 +24,8 @@ const config: Config = {
   dryRun: false,
   configPath: '.github/ai-review.yml',
   reviewerLogin: 'github-actions[bot]',
+  suggestTests: false,
+  maxTestSuggestions: 5,
 };
 
 const pr: PullRequestInfo = {
@@ -42,6 +44,8 @@ function fakeGitHub(
     createReview?: Mock<GitHubApi['createReview']>;
     repoConfig?: string;
     earlierBodies?: string[];
+    /** Files at the repository root of the base commit, with their contents. */
+    rootFiles?: Record<string, string>;
   } = {},
 ) {
   return {
@@ -50,7 +54,16 @@ function fakeGitHub(
     createReview:
       overrides.createReview ??
       vi.fn<GitHubApi['createReview']>().mockResolvedValue({ url: 'https://github.com/o/r/pull/5#review' }),
-    getFileContent: vi.fn<GitHubApi['getFileContent']>().mockResolvedValue(overrides.repoConfig),
+    getFileContent: vi
+      .fn<GitHubApi['getFileContent']>()
+      .mockImplementation((path) =>
+        Promise.resolve(
+          path === '.github/ai-review.yml' ? overrides.repoConfig : overrides.rootFiles?.[path],
+        ),
+      ),
+    listDirectory: vi
+      .fn<GitHubApi['listDirectory']>()
+      .mockResolvedValue(Object.keys(overrides.rootFiles ?? {})),
     listBodiesBy: vi.fn<GitHubApi['listBodiesBy']>().mockResolvedValue(overrides.earlierBodies ?? []),
   };
 }
@@ -258,5 +271,75 @@ describe('de-duplication across runs', () => {
       config,
     );
     expect(outcome).toMatchObject({ status: 'reviewed', inline: 1 });
+  });
+});
+
+describe('test suggestions', () => {
+  const vitestRepo = { 'package.json': JSON.stringify({ devDependencies: { vitest: '5' } }) };
+  const suggestion = {
+    suggestions: [
+      {
+        target: 'src/a.ts',
+        kind: 'unit',
+        framework: 'vitest',
+        testPath: 'test/a.test.ts',
+        title: 'uses a parameterised delete',
+        rationale: 'The delete query changed.',
+        code: "import { it } from 'vitest';",
+      },
+    ],
+  };
+
+  it('is off by default: no framework detection, no extra request', async () => {
+    const github = fakeGitHub([file('src/a.ts', TWO_HUNK_PATCH)], { rootFiles: vitestRepo });
+    const provider = fakeProvider({ findings: [] });
+    await reviewPullRequest(deps(github, provider), config);
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+    expect(github.listDirectory).not.toHaveBeenCalled();
+  });
+
+  it('posts a review with only suggestions when there are no findings, and counts their tokens', async () => {
+    const github = fakeGitHub([file('src/a.ts', TWO_HUNK_PATCH)], { rootFiles: vitestRepo });
+    const provider = fakeProvider({ findings: [] }, suggestion);
+    const outcome = await reviewPullRequest(deps(github, provider), { ...config, suggestTests: true });
+
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+    expect(outcome).toMatchObject({
+      status: 'reviewed',
+      inline: 0,
+      testSuggestions: 1,
+      usage: { inputTokens: 200, outputTokens: 20 },
+    });
+    const review = github.createReview.mock.calls[0]?.[0];
+    expect(review?.comments).toEqual([]);
+    expect(review?.body).toContain('### Suggested tests');
+    expect(review?.body).toContain('uses a parameterised delete');
+  });
+
+  it('stays clean when the suggestion request returns nothing', async () => {
+    const github = fakeGitHub([file('src/a.ts', TWO_HUNK_PATCH)], { rootFiles: vitestRepo });
+    const provider = fakeProvider({ findings: [] }, { suggestions: [] });
+    const outcome = await reviewPullRequest(deps(github, provider), { ...config, suggestTests: true });
+    expect(outcome).toMatchObject({ status: 'clean', testSuggestions: 0 });
+    expect(github.createReview).not.toHaveBeenCalled();
+  });
+
+  it('keeps the review when the suggestion request fails', async () => {
+    const github = fakeGitHub([file('src/a.ts', TWO_HUNK_PATCH)], { rootFiles: vitestRepo });
+    const provider = fakeProvider({ findings: [finding('src/a.ts', 2)] }, new ProviderError('refusal', 'no'));
+    const outcome = await reviewPullRequest(deps(github, provider), { ...config, suggestTests: true });
+    expect(outcome).toMatchObject({ status: 'reviewed', inline: 1, testSuggestions: 0 });
+    expect(github.createReview.mock.calls[0]?.[0].body).toContain('Test suggestions unavailable: refusal.');
+  });
+
+  it('keeps suggestions in the 422 summary-only fallback', async () => {
+    const createReview = vi
+      .fn<GitHubApi['createReview']>()
+      .mockRejectedValueOnce(Object.assign(new Error('Unprocessable'), { status: 422 }))
+      .mockResolvedValueOnce({ url: 'u' });
+    const github = fakeGitHub([file('src/a.ts', TWO_HUNK_PATCH)], { rootFiles: vitestRepo, createReview });
+    const provider = fakeProvider({ findings: [finding('src/a.ts', 2)] }, suggestion);
+    await reviewPullRequest(deps(github, provider), { ...config, suggestTests: true });
+    expect(createReview.mock.calls[1]?.[0].body).toContain('### Suggested tests');
   });
 });

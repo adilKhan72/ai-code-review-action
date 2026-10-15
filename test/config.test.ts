@@ -88,4 +88,13 @@ describe('readConfig', () => {
   it('fails clearly when the GitHub token is empty', () => {
     expect(() => readConfig(reader({ 'api-key': 'k' }))).toThrow(/github-token/);
   });
+
+  it('reads the test-suggestion inputs: off by default, capped at 10', () => {
+    expect(readConfig(reader(base))).toMatchObject({ suggestTests: false, maxTestSuggestions: 5 });
+    expect(
+      readConfig(reader({ ...base, 'suggest-tests': 'true', 'max-test-suggestions': '10' })),
+    ).toMatchObject({ suggestTests: true, maxTestSuggestions: 10 });
+    expect(() => readConfig(reader({ ...base, 'max-test-suggestions': '11' }))).toThrow(/at most 10/);
+    expect(() => readConfig(reader({ ...base, 'suggest-tests': 'yes' }))).toThrow(ConfigError);
+  });
 });
