@@ -14,6 +14,8 @@ export interface Finding {
   severity: Severity;
   title: string;
   body: string;
+  /** Stable identity across runs, set by the engine for de-duplication. */
+  fingerprint?: string | undefined;
 }
 
 export interface SkippedFile {

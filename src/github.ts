@@ -5,6 +5,7 @@ import type { PrFile } from './types.js';
 export interface PullRequestInfo {
   number: number;
   headSha: string;
+  baseSha: string;
   title: string;
   body: string;
   draft: boolean;
@@ -15,6 +16,10 @@ export interface GitHubApi {
   getPullRequest(): Promise<PullRequestInfo>;
   listFiles(): Promise<PrFile[]>;
   createReview(review: ReviewPayload): Promise<{ url: string }>;
+  /** File text at a commit, or undefined if the file does not exist there. */
+  getFileContent(path: string, ref: string): Promise<string | undefined>;
+  /** Bodies of review comments and review summaries on this PR written by `login`. */
+  listBodiesBy(login: string): Promise<string[]>;
 }
 
 type Octokit = ReturnType<typeof getOctokit>;
@@ -31,6 +36,7 @@ export function gitHubApi(
       return {
         number: data.number,
         headSha: data.head.sha,
+        baseSha: data.base.sha,
         title: data.title,
         body: data.body ?? '',
         draft: data.draft === true,
@@ -44,6 +50,24 @@ export function gitHubApi(
     async createReview(review) {
       const { data } = await octokit.rest.pulls.createReview({ ...pr, ...review });
       return { url: data.html_url };
+    },
+    async getFileContent(path, ref) {
+      try {
+        const { data } = await octokit.rest.repos.getContent({ ...repo, path, ref });
+        if (Array.isArray(data) || data.type !== 'file' || !('content' in data)) return undefined;
+        return Buffer.from(data.content, 'base64').toString('utf8');
+      } catch (err) {
+        if (typeof err === 'object' && err !== null && (err as { status?: unknown }).status === 404)
+          return undefined;
+        throw err;
+      }
+    },
+    async listBodiesBy(login) {
+      const [comments, reviews] = await Promise.all([
+        octokit.paginate(octokit.rest.pulls.listReviewComments, { ...pr, per_page: 100 }),
+        octokit.paginate(octokit.rest.pulls.listReviews, { ...pr, per_page: 100 }),
+      ]);
+      return [...comments, ...reviews].filter((item) => item.user?.login === login).map((item) => item.body);
     },
   };
 }

@@ -1,0 +1,8 @@
+# Review settings for this repository. The action reads this file from the PR's base commit.
+rules:
+  - Model output and pull-request text are untrusted. Flag any code path where they reach Markdown, logs or API calls without validation or escaping.
+  - Never log or include API keys or tokens in error messages.
+  - Inline comments must only target lines that are present in the diff (ADR-0001).
+min-severity: low
+exclude:
+  - 'docs/**'

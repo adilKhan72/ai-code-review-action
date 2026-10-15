@@ -1,6 +1,7 @@
 import type { Finding, SkippedFile, TokenUsage } from '../types.js';
+import { fingerprintMarker } from './fingerprint.js';
 
-/** Hidden marker that identifies this action's reviews (used for de-duplication in a later milestone). */
+/** Hidden marker that identifies this action's reviews. */
 export const REVIEW_MARKER = '<!-- ai-code-review-action -->';
 
 export interface ReviewComment {
@@ -28,6 +29,7 @@ export interface ReviewSummary {
   failedChunks: readonly string[];
   usage: TokenUsage;
   belowThreshold: number;
+  alreadyReported: number;
 }
 
 const BADGE: Record<Finding['severity'], string> = {
@@ -38,7 +40,8 @@ const BADGE: Record<Finding['severity'], string> = {
 };
 
 export function commentBody(finding: Finding): string {
-  return `**${BADGE[finding.severity]}: ${escapeInline(finding.title)}**\n\n${finding.body}`;
+  const marker = finding.fingerprint ? `\n\n${fingerprintMarker(finding.fingerprint)}` : '';
+  return `**${BADGE[finding.severity]}: ${escapeInline(finding.title)}**\n\n${finding.body}${marker}`;
 }
 
 export function buildReview(summary: ReviewSummary): ReviewPayload {
@@ -63,7 +66,7 @@ function summaryBody(s: ReviewSummary): string {
     '### AI review',
     '',
     total === 0
-      ? `No issues found in ${plural(s.reviewedFiles, 'file')}.`
+      ? `No new issues found in ${plural(s.reviewedFiles, 'file')}.`
       : `${plural(total, 'finding')} in ${plural(s.reviewedFiles, 'reviewed file')}: ${String(s.inline.length)} inline` +
         (s.offDiff.length > 0 ? `, ${String(s.offDiff.length)} below.` : '.'),
   ];
@@ -75,7 +78,8 @@ function summaryBody(s: ReviewSummary): string {
       '',
     );
     for (const f of s.offDiff) {
-      lines.push(`- ${BADGE[f.severity]}: \`${f.path}:${String(f.line)}\` ${escapeInline(f.title)}`);
+      const marker = f.fingerprint ? ` ${fingerprintMarker(f.fingerprint)}` : '';
+      lines.push(`- ${BADGE[f.severity]}: \`${f.path}:${String(f.line)}\` ${escapeInline(f.title)}${marker}`);
     }
   }
   if (s.failedChunks.length > 0) {
@@ -93,6 +97,7 @@ function summaryBody(s: ReviewSummary): string {
     `${String(s.usage.inputTokens)} input / ${String(s.usage.outputTokens)} output tokens`,
   ];
   if (s.belowThreshold > 0) footer.push(`${String(s.belowThreshold)} below min-severity hidden`);
+  if (s.alreadyReported > 0) footer.push(`${String(s.alreadyReported)} already reported earlier`);
   lines.push('', `<sub>${footer.join(' · ')}. AI-generated; verify before acting.</sub>`);
   return lines.join('\n');
 }

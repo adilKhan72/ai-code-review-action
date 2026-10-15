@@ -1,11 +1,13 @@
 import { chunkFiles } from './chunk.js';
 import type { Config } from './config.js';
-import { parsePatch } from './diff/patch.js';
+import { parsePatch, type ParsedPatch } from './diff/patch.js';
 import { selectFiles } from './filter.js';
 import { FINDINGS_SCHEMA, InvalidOutputError, parseFindings } from './findings.js';
 import type { GitHubApi } from './github.js';
 import { buildPrompt } from './prompt.js';
 import { ProviderError, type Provider } from './providers/types.js';
+import { applyRepoConfig, parseRepoConfig } from './repo-config.js';
+import { extractFingerprints, fingerprint } from './review/fingerprint.js';
 import { mapFindings } from './review/map.js';
 import { buildReview, type ReviewPayload } from './review/payload.js';
 import type { Finding, SkippedFile, TokenUsage } from './types.js';
@@ -52,6 +54,8 @@ type ReviewConfig = Pick<
   | 'skipDraft'
   | 'dryRun'
   | 'model'
+  | 'configPath'
+  | 'reviewerLogin'
 >;
 
 export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig): Promise<ReviewOutcome> {
@@ -60,8 +64,21 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
   // Re-checked here because the event payload can be stale on a re-run.
   if (pr.draft && config.skipDraft) return { status: 'skipped', reason: `PR #${pr.number} is a draft` };
 
+  // From the base commit: the PR under review must not be able to rewrite its own review rules.
+  const repoConfigText = await github.getFileContent(config.configPath, pr.baseSha);
+  let repoConfig;
+  if (repoConfigText !== undefined) {
+    const parsed = parseRepoConfig(repoConfigText, config.configPath);
+    parsed.warnings.forEach((w) => {
+      log.warning(w);
+    });
+    repoConfig = parsed.config;
+    log.info(`Using ${config.configPath} from the base commit (${String(repoConfig.rules.length)} rules).`);
+  }
+  const settings = applyRepoConfig(config, repoConfig);
+
   const files = await github.listFiles();
-  const filtered = selectFiles(files, config);
+  const filtered = selectFiles(files, { ...config, ...settings });
   const { chunks, skipped: overBudget } = chunkFiles(
     filtered.selected,
     Math.min(MAX_CHUNK_BYTES, config.maxDiffBytes),
@@ -72,9 +89,9 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
     return { status: 'skipped', reason: `no reviewable files (${String(skipped.length)} skipped)` };
   }
 
-  const commentable = new Map<string, ReadonlySet<number>>();
-  for (const file of chunks.flat())
-    commentable.set(file.filename, parsePatch(file.patch ?? '').commentableLines);
+  const patches = new Map<string, ParsedPatch>();
+  for (const file of chunks.flat()) patches.set(file.filename, parsePatch(file.patch ?? ''));
+  const commentable = new Map([...patches].map(([path, p]) => [path, p.commentableLines] as const));
 
   const findings: Finding[] = [];
   const failedChunks: string[] = [];
@@ -84,7 +101,10 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
   // Sequential, not parallel: chunk counts are small, and it keeps the action well inside provider rate limits.
   for (const [index, chunk] of chunks.entries()) {
     const label = `request ${String(index + 1)}/${String(chunks.length)} (${chunk.map((f) => f.filename).join(', ')})`;
-    const prompt = buildPrompt({ title: pr.title, description: pr.body, files: chunk }, deps.nonce);
+    const prompt = buildPrompt(
+      { title: pr.title, description: pr.body, files: chunk, rules: settings.rules },
+      deps.nonce,
+    );
     try {
       const result = await provider.complete({
         ...prompt,
@@ -117,7 +137,18 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
     throw new Error(`All ${String(chunks.length)} review requests failed; see the warnings above.`);
   }
 
-  const mapped = mapFindings(findings, commentable, config.minSeverity, MAX_INLINE_COMMENTS);
+  // Skip anything this reviewer already reported on an earlier run, so re-runs and new pushes only add news.
+  const earlier = new Set((await github.listBodiesBy(config.reviewerLogin)).flatMap(extractFingerprints));
+  let alreadyReported = 0;
+  const fresh: Finding[] = [];
+  for (const finding of findings) {
+    const fp = fingerprint(finding, patches.get(finding.path)?.newLineText.get(finding.line));
+    if (earlier.has(fp)) alreadyReported++;
+    else fresh.push({ ...finding, fingerprint: fp });
+  }
+  if (alreadyReported > 0) log.info(`${String(alreadyReported)} findings were already reported earlier.`);
+
+  const mapped = mapFindings(fresh, commentable, settings.minSeverity, MAX_INLINE_COMMENTS);
   const counts = {
     inline: mapped.inline.length,
     offDiff: mapped.offDiff.length,
@@ -126,7 +157,7 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
   };
   if (counts.inline === 0 && counts.offDiff === 0 && failedChunks.length === 0) {
     // Posting "no issues" on every push is noise; the job log and the `status` output are enough.
-    log.info('No findings; not posting a review.');
+    log.info('No new findings; not posting a review.');
     return { status: 'clean', ...counts };
   }
 
@@ -140,6 +171,7 @@ export async function reviewPullRequest(deps: EngineDeps, config: ReviewConfig):
     failedChunks,
     usage,
     belowThreshold: mapped.belowThreshold,
+    alreadyReported,
   };
   const payload = buildReview(summary);
   if (config.dryRun) {
