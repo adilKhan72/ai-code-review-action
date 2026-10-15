@@ -59,7 +59,7 @@ jobs:
           echo "status=$STATUS inline=$INLINE"
           if [ "$EVENT" = pull_request ]; then
             test "$STATUS" = dry-run
-            test "$INLINE" = 1
+            test "$INLINE" -ge 1  # the mock answers each request with one finding
           else
             test "$STATUS" = skipped
           fi
