@@ -108,7 +108,7 @@ jobs:
   pin third-party actions this way. Keep the version in a comment so Dependabot or Renovate can update it:
 
   ```yaml
-  - uses: adilKhan72/ai-code-review-action@<full 40-character commit SHA> # v1.0.0
+  - uses: adilKhan72/ai-code-review-action@3f7ca4152fdb6028bc0aae6ad88485739097ee93 # v1.0.0
   ```
 
   The SHA for each release is in its [release notes](https://github.com/adilKhan72/ai-code-review-action/releases).
