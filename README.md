@@ -3,8 +3,8 @@
 A GitHub Action that reviews pull requests with an LLM and posts **one** review with inline comments, **only on
 lines the PR actually changed**, under hard cost limits.
 
-> **Status: in active development.** Built in public, one pull request per milestone. See [Roadmap](#roadmap).
-> The review engine works end to end against the real GitHub API, but it has **not yet been run against a live
+> **Status: v1.0.0 released.** Built in public, one pull request per milestone. See [Roadmap](#roadmap) and the
+> [changelog](CHANGELOG.md). The review engine works end to end against the real GitHub API, but it has **not yet been run against a live
 > model**. Every provider test uses a mock.
 
 ## The problem
@@ -88,7 +88,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
-      - uses: adilKhan72/ai-code-review-action@v0 # not released yet; see Roadmap
+      - uses: adilKhan72/ai-code-review-action@v1
         with:
           provider: anthropic
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -98,6 +98,24 @@ jobs:
             **/*.lock
             dist/**
 ```
+
+### Pinning a version
+
+- `@v1` follows the latest `1.x.y` release: fixes and backwards-compatible features, no breaking changes.
+- `@v1.0.0` is an immutable tag in practice, but a tag can technically be moved by the repository owner.
+- **A full commit SHA** is the only reference that cannot change under you. Security-conscious teams (and
+  GitHub's [hardening guide](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions))
+  pin third-party actions this way. Keep the version in a comment so Dependabot or Renovate can update it:
+
+  ```yaml
+  - uses: adilKhan72/ai-code-review-action@<full 40-character commit SHA> # v1.0.0
+  ```
+
+  The SHA for each release is in its [release notes](https://github.com/adilKhan72/ai-code-review-action/releases).
+  You can also get it with `git ls-remote https://github.com/adilKhan72/ai-code-review-action refs/tags/v1.0.0`.
+
+To enable test suggestions, add `suggest-tests: true` under `with:` (see
+[Test suggestions](#test-suggestions-opt-in)).
 
 > Pull requests from forks do not receive repository secrets with `pull_request`. Do not switch to
 > `pull_request_target` to work around this unless you understand the risk. This action never checks out PR code,
@@ -201,7 +219,7 @@ See [ADR-0004](docs/adr/0004-test-suggestions-in-the-summary.md) for the reasoni
 | 3         | `.github/ai-review.yml` config (rules, threshold, ignore paths), no duplicate comments on re-runs                                                                      | Done    |
 | 4         | Dogfood with a live model on this repo and on [loan-underwriting-ai](https://github.com/adilKhan72/loan-underwriting-ai). Publish real review examples and cost per PR | Planned |
 | 5         | Opt-in test suggestions: unit tests in the detected framework (vitest/jest/pytest/PHPUnit) and Playwright specs for changed UI files, in the review summary            | Done    |
-| 6         | `v1` release and GitHub Marketplace listing                                                                                                                            | Planned |
+| 6         | `v1.0.0` release, moving `v1` tag, changelog, release checklist. Marketplace listing is a manual step for the owner                                                    | Done    |
 
 ## Development
 
@@ -216,6 +234,9 @@ itself, with real GitHub API calls and a mock model server (`scripts/mock-ollama
 
 **Not yet run against a live model.** No provider key is available to this project yet, so every provider test
 uses a mocked SDK client or `fetch` and asserts the exact request shape. Live dogfooding is Milestone 4.
+
+Releases follow [docs/release-checklist.md](docs/release-checklist.md). Changes are recorded in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Architecture decisions
 
