@@ -29276,7 +29276,7 @@ var init_sleep = __esm({
 var VERSION7;
 var init_version = __esm({
   "node_modules/@anthropic-ai/sdk/version.mjs"() {
-    VERSION7 = "0.134.0";
+    VERSION7 = "0.135.0";
   }
 });
 
@@ -29478,9 +29478,9 @@ function ReadableStreamFrom(iterable) {
     }
   });
 }
-function ReadableStreamToAsyncIterable(stream2) {
+function readableStreamIterator(stream2) {
   if (stream2[Symbol.asyncIterator])
-    return stream2;
+    return stream2[Symbol.asyncIterator]();
   const reader = stream2.getReader();
   return {
     async next() {
@@ -29499,11 +29499,19 @@ function ReadableStreamToAsyncIterable(stream2) {
       reader.releaseLock();
       await cancelPromise;
       return { done: true, value: void 0 };
-    },
-    [Symbol.asyncIterator]() {
-      return this;
     }
   };
+}
+async function* ReadableStreamToAsyncIterable(stream2) {
+  const iter = readableStreamIterator(stream2);
+  const reader = {};
+  droppedReaders?.register(reader, iter, reader);
+  try {
+    for await (const chunk of { [Symbol.asyncIterator]: () => iter })
+      yield chunk;
+  } finally {
+    droppedReaders?.unregister(reader);
+  }
 }
 async function CancelReadableStream(stream2) {
   if (stream2 === null || typeof stream2 !== "object")
@@ -29517,8 +29525,15 @@ async function CancelReadableStream(stream2) {
   reader.releaseLock();
   await cancelPromise;
 }
+var droppedReaders;
 var init_shims = __esm({
   "node_modules/@anthropic-ai/sdk/internal/shims.mjs"() {
+    droppedReaders = typeof FinalizationRegistry === "undefined" ? void 0 : /* @__PURE__ */ new FinalizationRegistry(async (iter) => {
+      try {
+        await iter.return?.();
+      } catch {
+      }
+    });
   }
 });
 
@@ -35277,27 +35292,27 @@ var init_MessageStream = __esm({
 });
 
 // node_modules/@anthropic-ai/sdk/internal/decoders/jsonl.mjs
-var _JSONLDecoder_consumed, JSONLDecoder;
+var JSONLDecoder;
 var init_jsonl = __esm({
   "node_modules/@anthropic-ai/sdk/internal/decoders/jsonl.mjs"() {
-    init_tslib();
     init_error();
     init_shims();
     init_line();
     JSONLDecoder = /* @__PURE__ */ (() => {
       class JSONLDecoder2 {
-        constructor(iterator2, controller) {
+        constructor(iterator2, controller, response) {
           this.iterator = iterator2;
-          _JSONLDecoder_consumed.set(this, false);
+          this.response = response;
           this.controller = controller;
         }
         async *decoder() {
-          if (__classPrivateFieldGet(this, _JSONLDecoder_consumed, "f")) {
+          const iterator2 = this.iterator;
+          if (!iterator2) {
             throw new AnthropicError("Cannot iterate over a consumed stream.");
           }
-          __classPrivateFieldSet(this, _JSONLDecoder_consumed, true, "f");
+          this.iterator = void 0;
           const lineDecoder = new LineDecoder();
-          for await (const chunk of this.iterator) {
+          for await (const chunk of iterator2) {
             for (const line of lineDecoder.decode(chunk)) {
               yield JSON.parse(line);
             }
@@ -35306,7 +35321,7 @@ var init_jsonl = __esm({
             yield JSON.parse(line);
           }
         }
-        [(_JSONLDecoder_consumed = /* @__PURE__ */ new WeakMap(), Symbol.asyncIterator)]() {
+        [Symbol.asyncIterator]() {
           return this.decoder();
         }
         static fromResponse(response, controller) {
@@ -35317,7 +35332,7 @@ var init_jsonl = __esm({
             }
             throw new AnthropicError(`Attempted to iterate over a response with no body`);
           }
-          return new JSONLDecoder2(ReadableStreamToAsyncIterable(response.body), controller);
+          return new JSONLDecoder2(ReadableStreamToAsyncIterable(response.body), controller, response);
         }
       }
       return JSONLDecoder2;
@@ -47284,8 +47299,9 @@ var init_spend_limits = __esm({
          * For a Claude Enterprise organization, this deletes a per-user override, and the
          * member falls back to any inherited spend limit at that period. Its seat-tier,
          * group, and organization-level rows cannot be deleted via this endpoint. A Claude
-         * Console organization deletes its organization and workspace limits. Deleting
-         * them through the API is in an early access preview.
+         * Console organization deletes its organization and workspace limits, but not its
+         * `usage_tier` limit. Deleting organization and workspace limits through the API
+         * is in an early access preview.
          *
          * @example
          * ```ts
