@@ -5,6 +5,13 @@ updates:
     schedule:
       interval: 'weekly'
     open-pull-requests-limit: 5
+    ignore:
+      # typescript-eslint 8 peer range is <6.1.0; revisit when it supports TypeScript 7.
+      - dependency-name: 'typescript'
+        versions: ['7.x']
+      # Types must match the node24 action runtime (action.yml).
+      - dependency-name: '@types/node'
+        versions: ['>=25.0.0']
     groups:
       minor-and-patch:
         update-types:
